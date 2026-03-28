@@ -1,122 +1,86 @@
+//
+//  FontPicker.swift
+//  lara
+//
+//  Created by ruter on 27.03.26.
+//
+
 import SwiftUI
+import Darwin
 
 struct AppsView: View {
-    @ObservedObject private var mgr = laramgr.shared
-    @State private var apps: [SideloadedApp] = []
-    @State private var loadError: String?
-    @State private var showError = false
-
+    @ObservedObject var mgr: laramgr
+    
+    var appName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+        ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+        ?? "Unknown App"
+    }
+    var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    }
+    var appIcon: UIImage {
+        if let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let files = primary["CFBundleIconFiles"] as? [String],
+           let last = files.last,
+           let image = UIImage(named: last) {
+            return image
+        }
+        
+        return UIImage(named: "unknown") ?? UIImage()
+    }
+    
     var body: some View {
         List {
-            if apps.isEmpty {
-                Text(mgr.kfsready ? "No sideloaded apps found." : "KFS not ready.")
-                    .foregroundColor(.secondary)
-            } else {
-                ForEach(apps) { app in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(app.name)
+            Section {
+                HStack(spacing: 12) {
+                    Image(uiImage: appIcon)
+                        .resizable()
+                        .frame(width: 40, height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    
+                    VStack(alignment: .leading) {
+                        Text(appName)
                             .font(.headline)
-                        Text(app.bundleId)
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                        Text(app.bundlePath)
-                            .font(.caption)
+                        
+                        Text("Version \(appVersion)")
+                            .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
-                    .padding(.vertical, 4)
+                    
                 }
+            } header: {
+                Text("Apps")
+            } footer: {
+                Text("Currently only shows lara, if you know how to enumerate sideloaded apps on the device (excluding like idevice), let me know via a GitHub issue or something.")
+            }
+            
+            Section {
+                Button {
+                    let bundlePath = Bundle.main.bundlePath
+                    let key = "com.apple.installd.validatedByFreeProfile"
+                    var value: [UInt8] = [0, 0, 0]
+                    let rc = setxattr(bundlePath, key, &value, value.count, 0, 0)
+                    if rc == 0 {
+                        mgr.logmsg("set \(key) on app bundle")
+                    } else {
+                        mgr.logmsg("failed to set \(key): \(String(cString: strerror(errno)))")
+                    }
+                } label: {
+                    Text("Bypass 3 App Limit")
+                }
+            } footer: {
+                Text("This will set the validatedByFreeProfile xattr on the app bundle. As currently only lara will be listed, that means only one app slot will be freed.")
             }
         }
         .navigationTitle("Sideloaded Apps")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("Reload") {
-                    loadApps()
+                    // future reload logic
                 }
             }
         }
-        .alert("Failed to Load", isPresented: $showError) {
-            Button("OK") {}
-        } message: {
-            Text(loadError ?? "Unknown error")
-        }
-        .onAppear {
-            loadApps()
-        }
-    }
-
-    private func loadApps() {
-        do {
-            apps = try SideloadedAppEnumerator.fetchSideloadedApps(using: mgr)
-            loadError = nil
-        } catch {
-            loadError = "\(error)"
-            showError = true
-            mgr.logmsg("[sideload] \(error)")
-        }
-    }
-}
-
-struct SideloadedApp: Identifiable {
-    let id = UUID()
-    let name: String
-    let bundleId: String
-    let bundlePath: String
-}
-
-enum SideloadedAppEnumerator {
-    private static let appRoot = "/var/containers/Bundle/Application"
-
-    static func fetchSideloadedApps(using mgr: laramgr) throws -> [SideloadedApp] {
-        guard mgr.kfsready else {
-            mgr.logmsg("[sideload] kfs not ready")
-            throw NSError(domain: "lara.apps", code: 1, userInfo: [NSLocalizedDescriptionKey: "KFS is not ready."])
-        }
-        guard let containerEntries = mgr.kfslistdir(path: appRoot) else {
-            mgr.logmsg("[sideload] kfs listdir failed: \(appRoot)")
-            throw NSError(domain: "lara.apps", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to list app containers."])
-        }
-
-        mgr.logmsg("[sideload] containers: \(containerEntries.count)")
-        var results: [SideloadedApp] = []
-
-        for container in containerEntries where container.isDir && container.name != "." && container.name != ".." {
-            let containerPath = "\(appRoot)/\(container.name)"
-            guard let appEntries = mgr.kfslistdir(path: containerPath) else {
-                mgr.logmsg("[sideload] listdir failed: \(containerPath)")
-                continue
-            }
-
-            for appEntry in appEntries where appEntry.isDir && appEntry.name.hasSuffix(".app") {
-                let appBundlePath = "\(containerPath)/\(appEntry.name)"
-                guard hasEmbeddedMobileProvision(in: appBundlePath, mgr: mgr) else { continue }
-
-                let infoPath = "\(appBundlePath)/Info.plist"
-                let info = readPlist(at: infoPath, mgr: mgr)
-                let bundleId = info?["CFBundleIdentifier"] as? String ?? "unknown"
-                let name = (info?["CFBundleDisplayName"] as? String)
-                    ?? (info?["CFBundleName"] as? String)
-                    ?? appEntry.name.replacingOccurrences(of: ".app", with: "")
-
-                results.append(SideloadedApp(name: name, bundleId: bundleId, bundlePath: appBundlePath))
-            }
-        }
-
-        mgr.logmsg("[sideload] matches: \(results.count)")
-        return results.sorted { $0.name.lowercased() < $1.name.lowercased() }
-    }
-
-    private static func hasEmbeddedMobileProvision(in appBundlePath: String, mgr: laramgr) -> Bool {
-        guard let entries = mgr.kfslistdir(path: appBundlePath) else {
-            mgr.logmsg("[sideload] listdir failed: \(appBundlePath)")
-            return false
-        }
-        return entries.contains { $0.name == "embedded.mobileprovision" && !$0.isDir }
-    }
-
-    private static func readPlist(at path: String, mgr: laramgr) -> [String: Any]? {
-        guard let data = mgr.kfsread(path: path, maxSize: 512 * 1024) else { return nil }
-        guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) else { return nil }
-        return plist as? [String: Any]
     }
 }

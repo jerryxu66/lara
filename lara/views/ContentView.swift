@@ -6,7 +6,8 @@
 //
 
 import SwiftUI
-import notify
+import UniformTypeIdentifiers
+
 
 struct ContentView: View {
     @ObservedObject private var mgr = laramgr.shared
@@ -14,7 +15,7 @@ struct ContentView: View {
     @State private var pid: pid_t = getpid()
     @State private var hasoffsets = haskernproc()
     @State private var showresetalert = false
-    @State private var showfontsheet = false
+    @State private var pacSelfTestResult: Bool? = nil
     
     var body: some View {
         NavigationStack {
@@ -32,18 +33,29 @@ struct ContentView: View {
                     }
                 } else {
                     Section("Kernel Read Write") {
-                        Button(mgr.dsrunning ? "Running..." : "Run Exploit") {
+                        Button {
                             mgr.run()
+                        } label: {
+                            if mgr.dsrunning {
+                                HStack {
+                                    ProgressView()
+                                    Text("Running...")
+                                }
+                            } else {
+                                if mgr.dsready {
+                                    HStack {
+                                        Text("Ran Exploit")
+                                        Spacer()
+                                        Image(systemName: "checkmark.circle")
+                                            .foregroundColor(.green)
+                                    }
+                                } else {
+                                    Text("Run Exploit")
+                                }
+                            }
                         }
                         .disabled(mgr.dsrunning)
                         .disabled(mgr.dsready)
-                        
-                        HStack {
-                            Text("krw ready?")
-                            Spacer()
-                            Text(mgr.dsready ? "Yes" : "No")
-                                .foregroundColor(mgr.dsready ? .green : .red)
-                        }
                         
                         HStack {
                             Text("kernproc:")
@@ -73,37 +85,36 @@ struct ContentView: View {
                     }
 
                     Section("Kernel File System") {
-                        Button("Initialize KFS") {
+                        Button {
                             mgr.kfsinit()
+                        } label: {
+                            if !mgr.kfsready {
+                                Text("Initialise KFS")
+                            } else {
+                                HStack {
+                                    Text("Initialised KFS")
+                                    Spacer()
+                                    Image(systemName: "checkmark.circle")
+                                        .foregroundColor(.green)
+                                }
+                            }
                         }
-                        .disabled(!mgr.dsready)
+                        .disabled(!mgr.dsready || mgr.kfsready)
                         
-                        Button("Font Overwrite") {
-                            showfontsheet = true
-                        }
-                        .disabled(!mgr.kfsready)
-                        .confirmationDialog("Set System Font", isPresented: $showfontsheet, titleVisibility: .visible) {
-                            Button("Comic Sans MS") {
-                                let success = mgr.kfsoverwrite(target: laramgr.fontpath, withBundledFont: "Comic Sans SFUI")
-                                
-                                if success {
-                                    mgr.logmsg("font changed to Comic Sans MS")
-                                } else {
-                                    mgr.logmsg("failed to change font")
-                                }
+                        if mgr.kfsready {
+                            NavigationLink("Font Overwrite") {
+                                FontPicker(mgr: mgr)
                             }
                             
-                            Button("SFUI (Normal Font)") {
-                                let success = mgr.kfsoverwrite(target: laramgr.fontpath, withBundledFont: "SFUI")
+                            if 1 == 2 {
+                                NavigationLink("3 App Bypass") {
+                                    AppsView(mgr: mgr)
+                                }
                                 
-                                if success {
-                                    mgr.logmsg("font changed to SFUI")
-                                } else {
-                                    mgr.logmsg("failed to change font")
+                                NavigationLink("MobileGestalt") {
+                                    EditorView()
                                 }
                             }
-                            
-                            Button("Cancel", role: .cancel) { }
                         }
                         
                         HStack {
@@ -142,8 +153,10 @@ struct ContentView: View {
                     }
                     
                     Section {
-                        Button("Respring") {
-                            notify_post("com.apple.springboard.toggleLockScreen")
+                        if #unavailable(iOS 18.2) {
+                            Button("Respring") {
+                                mgr.respring()
+                            }
                         }
                         
                         Button("Panic!") {
